@@ -8,33 +8,15 @@
 
 using namespace std;
 
-void FormatResult(ostream& out, const string& name, const geonames::ParsedObject& obj) {
-    if (!obj) {
-        return;
-    }
-    out << name << ":\t";
-    bool firstTok = true;
-    for (auto& tok: obj.Tokens_) {
-        if (firstTok) {
-            firstTok = false;
-        } else {
-            out << ", ";
-        }
-        out << "'" << tok << "'";
-    }
-    out << endl;
-    out << "Raw:\t" << obj.Object_->Raw_ << endl;
-}
-
 void JsonResult(nlohmann::json& res, const string& name, const geonames::ParsedObject& obj, bool printTokens) {
     if (!obj) {
         return;
     }
     wstring_convert<codecvt_utf8<char32_t>, char32_t> utf8codec;
     res[name] = {
-        { "name", utf8codec.to_bytes(obj.Object_->Name_) },
-        { "latitude", obj.Object_->Latitude_ },
-        { "longitude", obj.Object_->Longitude_ }
+        { "name", utf8codec.to_bytes(obj.Object_->Name()) },
+        { "latitude", obj.Object_->Latitude() },
+        { "longitude", obj.Object_->Longitude() }
     };
     if (printTokens) {
         res[name + "_tokens"] = obj.Tokens_;
@@ -42,33 +24,25 @@ void JsonResult(nlohmann::json& res, const string& name, const geonames::ParsedO
 }
 
 int Main(int argc, char* argv[]) {
-    TCLAP::CmdLine cmd("Locate geonames in given strings");
+    TCLAP::CmdLine cmd("Geonames quality checker");
 
     TCLAP::ValueArg<string> input("i", "input", "Input file", false, "", "file_name", cmd);
     TCLAP::MultiArg<string> queries("q", "query", "Query string (discards -i)", false, "string", cmd);
-    TCLAP::ValueArg<string> jsonField("j", "json-field", "Input file is json object per line, read given field", false, "", "field", cmd);
+    TCLAP::ValueArg<string> jsonField("j", "json-field", "Input is json object per line, read given field", true, "", "field", cmd);
     TCLAP::ValueArg<string> output("o", "output", "Output file", false, "", "file_name", cmd);
     TCLAP::ValueArg<string> jsonUpdate("", "json-update", "Input file is json object per line, add result as field obj", false, "", "field", cmd);
     TCLAP::SwitchArg uniqueOnly("u", "unique-only", "Output only results with unique match", cmd);
-    TCLAP::SwitchArg rawResult("r", "raw", "Output raw geonames data for result objects", cmd);
     TCLAP::SwitchArg tokens("t", "tokens", "Output tokens used to deduce objects", cmd);
     TCLAP::SwitchArg oneLine("1", "one-line", "Output result JSON in one line per request", cmd);
     TCLAP::SwitchArg compareResults("", "compare-results", "Used with --json-update. Extract position from existing object and compare", cmd);
     TCLAP::ValueArg<double> epsilon("e", "epsilon", "Report errors if distance more than epsilon", false, 0.1, "number", cmd);
-    TCLAP::UnlabeledMultiArg<string> geodata("geodata", "Input geonames data", true, "file name", cmd);
+    TCLAP::UnlabeledValueArg<string> geodata("geodata", "Input map file", true, "", "file name", cmd);
 
     cmd.parse(argc, argv);
 
     geonames::GeoNames geoNames;
-    for (auto& fileName: geodata.getValue()) {
-        if (!geoNames.LoadData(fileName, rawResult.getValue())) {
-            cerr << "Failed to load geodata from file: " << fileName << endl;
-            return 1;
-        }
-    }
-
     ostringstream err;
-    if (!geoNames.Init(err)) {
+    if (!geoNames.Init(geodata.getValue(), err)) {
         cerr << "Failed to initialize geodata: " << err.str() << endl;
         return 1;
     }
@@ -78,10 +52,10 @@ int Main(int argc, char* argv[]) {
 
     unique_ptr<ifstream> inFile;
     unique_ptr<istringstream> inString;
-    if (!input.getValue().empty()) {
+    if (input.isSet()) {
         inFile.reset(new ifstream(input.getValue()));
         in = inFile.get();
-    } else if (!queries.getValue().empty()) {
+    } else if (queries.isSet()) {
         string queriesString;
         for (auto& q: queries) {
             queriesString += q + '\n';
@@ -90,14 +64,14 @@ int Main(int argc, char* argv[]) {
         in = inString.get();
     }
     unique_ptr<ofstream> outFile;
-    if (!output.getValue().empty()) {
+    if (output.isSet()) {
         outFile.reset(new ofstream(output.getValue()));
         out = outFile.get();
     }
 
     wstring_convert<codecvt_utf8<char32_t>, char32_t> utf8codec;
 
-    bool cmpResults = compareResults.getValue() && !jsonUpdate.getValue().empty();
+    bool cmpResults = compareResults.getValue() && jsonUpdate.isSet();
     size_t total = 0;
     size_t cmp_matched = 0;
     size_t cmp_errors = 0;
@@ -143,18 +117,18 @@ int Main(int argc, char* argv[]) {
                     double lat;
                     double lng;
                     if (results[0].City_) {
-                        city = utf8codec.to_bytes(results[0].City_.Object_->Name_);
-                        lat = results[0].City_.Object_->Latitude_;
-                        lng = results[0].City_.Object_->Longitude_;
+                        city = utf8codec.to_bytes(results[0].City_.Object_->Name());
+                        lat = results[0].City_.Object_->Latitude();
+                        lng = results[0].City_.Object_->Longitude();
                     } else if (results[0].Province_) {
-                        state = utf8codec.to_bytes(results[0].Province_.Object_->Name_);
-                        lat = results[0].Province_.Object_->Latitude_;
-                        lng = results[0].Province_.Object_->Longitude_;
+                        state = utf8codec.to_bytes(results[0].Province_.Object_->Name());
+                        lat = results[0].Province_.Object_->Latitude();
+                        lng = results[0].Province_.Object_->Longitude();
                     } else {
                         assert(results[0].Country_);
-                        country = utf8codec.to_bytes(results[0].Country_.Object_->Name_);
-                        lat = results[0].Country_.Object_->Latitude_;
-                        lng = results[0].Country_.Object_->Longitude_;
+                        country = utf8codec.to_bytes(results[0].Country_.Object_->Name());
+                        lat = results[0].Country_.Object_->Latitude();
+                        lng = results[0].Country_.Object_->Longitude();
                     }
                     res = {
                         { "city", city },
@@ -202,25 +176,6 @@ int Main(int argc, char* argv[]) {
                 data[jsonUpdate.getValue()] = res;
             }
             *out << data.dump(oneLine.getValue() ? -1 : 4) << endl;
-            continue;
-        }
-        results.clear();
-        if (geoNames.Parse(results, line, uniqueOnly.getValue())) {
-            for (auto& res: results) {
-                if (rawResult.getValue()) {
-                    *out << "Score: " << res.Score_ << endl;
-                    FormatResult(*out, "Country", res.Country_);
-                    FormatResult(*out, "State", res.Province_);
-                    FormatResult(*out, "City", res.City_);
-                } else {
-                    nlohmann::json obj(nlohmann::json::object());
-                    obj["score"] = res.Score_;
-                    JsonResult(obj, "country", res.Country_, tokens.getValue());
-                    JsonResult(obj, "state", res.Province_, tokens.getValue());
-                    JsonResult(obj, "city", res.City_, tokens.getValue());
-                    *out << obj.dump(oneLine.getValue() ? -1 : 4) << endl;
-                }
-            }
         }
     }
 

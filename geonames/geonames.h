@@ -7,7 +7,7 @@
 
 namespace geonames {
 
-enum _GeoType {
+enum GeoType {
     _Undef = 0,
 
     _PolitIndep = 2,
@@ -54,25 +54,32 @@ enum _GeoType {
     _TypesEnd   = _PopulCapHist
 };
 
-_GeoType GeoTypeFromString(const std::string& str);
-std::string GeoTypeToString(_GeoType type);
+GeoType GeoTypeFromString(const std::string& str);
+std::string GeoTypeToString(GeoType type);
 
-struct GeoObject {
-    uint32_t Id_ = 0;
-    _GeoType Type_ = _Undef;
-    double Latitude_ = 0;
-    double Longitude_ = 0;
-    std::u32string Name_;
-    std::string AsciiName_;
-    std::vector<size_t> AltHashes_;
-    std::string CountryCode_;
-    std::string ProvinceCode_;
-    size_t Population_ = 0;
-    std::string Raw_;
+class GeoObject {
+protected:
+    GeoObject()
+    {
+    }
 
-    GeoObject(const std::string& raw = "");
+public:
+    virtual ~GeoObject()
+    {
+    }
 
-    void Merge(const GeoObject& obj);
+    virtual uint32_t Id() const = 0;
+    virtual GeoType Type() const = 0;
+    virtual double Latitude() const = 0;
+    virtual double Longitude() const = 0;
+    virtual size_t Population() const = 0;
+
+    virtual std::u32string Name() const = 0;
+    virtual std::string AsciiName() const = 0;
+    virtual std::string CountryCode() const = 0;
+    virtual std::string ProvinceCode() const = 0;
+    virtual std::vector<size_t> AltHashes() const = 0;
+
     bool IsCountry() const;
     bool IsProvince() const;
     bool IsCity() const;
@@ -81,14 +88,16 @@ struct GeoObject {
     bool HasProvinceCode() const;
 };
 
+typedef std::shared_ptr<GeoObject> GeoObjectPtr;
+
 struct ParsedObject {
-    const GeoObject* Object_ = nullptr;
+    GeoObjectPtr Object_;
     std::vector<std::string> Tokens_;
     bool ByName_ = false;
     bool Ambiguous_ = false;
 
     operator bool() const {
-        return Object_ != nullptr;
+        return Object_.get() != nullptr;
     }
 };
 
@@ -104,8 +113,8 @@ public:
     GeoNames();
     ~GeoNames();
 
-    bool LoadData(const std::string& fileName, bool saveRaw = false);
-    bool Init(std::ostream& err);
+    bool Build(const std::string& mapFileName, const std::string& rawFileName, std::ostream& err) const;
+    bool Init(const std::string& mapFileName, std::ostream& err);
 
     bool Parse(std::vector<ParseResult>& results, const std::string& str, bool uniqueOnly = true) const;
 

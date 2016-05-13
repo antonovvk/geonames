@@ -2,6 +2,7 @@
 #include <locale>
 #include <codecvt>
 #include <cassert>
+#include <cerrno>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -9,13 +10,25 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "include/mms/features/hash/c++11.h"
+#include "include/mms/vector.h"
+#include "include/mms/string.h"
+#include "include/mms/unordered_map.h"
+#include "include/mms/writer.h"
+#include "include/mms/ptr.h"
+
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+
 #include "geonames.h"
 
 using namespace std;
 
 namespace geonames {
 
-string GeoTypeToString(_GeoType type) {
+string GeoTypeToString(GeoType type) {
     switch (type) {
         case _Adm1:         return "ADM1";
         case _Adm2:         return "ADM2";
@@ -57,9 +70,9 @@ string GeoTypeToString(_GeoType type) {
     return "";
 }
 
-_GeoType GeoTypeFromString(const string& str) {
+GeoType GeoTypeFromString(const string& str) {
     for (uint32_t i = _TypesBegin; i <= _TypesEnd; ++i) {
-        _GeoType f = (_GeoType)i;
+        GeoType f = (GeoType)i;
         if (GeoTypeToString(f) == str) {
             return f;
         }
@@ -67,8 +80,9 @@ _GeoType GeoTypeFromString(const string& str) {
     return _Undef;
 }
 
-static u32string toLower(const u32string& str) {
-    u32string res(str);
+template <typename T>
+static u32string ToLower(const T& data) {
+    u32string res(data.begin(), data.end());
     transform(res.begin(), res.end(), res.begin(), ::tolower);
     return res;
 }
@@ -99,8 +113,43 @@ static u32string toLower(const u32string& str) {
     modification date : date of last modification in yyyy-MM-dd format
 */
 
-GeoObject::GeoObject(const string& raw)
-    : Raw_(raw)
+template <typename P>
+struct ObjectImpl {
+    uint32_t Id_ = 0;
+    GeoType Type_ = _Undef;
+    double Latitude_ = 0;
+    double Longitude_ = 0;
+    size_t Population_ = 0;
+
+    mms::vector<P, uint32_t> Name_;
+    mms::vector<P, size_t> AltHashes_;
+    mms::string<P> AsciiName_;
+    mms::string<P> CountryCode_;
+    mms::string<P> ProvinceCode_;
+
+    ObjectImpl(const string& raw);
+
+    uint64_t NameHash() const {
+        return std::hash<u32string>()(ToLower(Name_));
+    };
+
+    void Merge(const ObjectImpl& obj) {
+        assert(Id_ == obj.Id_);
+        if (Population_ == 0) {
+            Population_ = obj.Population_;
+        }
+    }
+
+    template<class A> void traverseFields(A a) const {
+        a(Id_)(Type_)(Latitude_)(Longitude_)(Population_)(Name_)(AltHashes_)(AsciiName_)(CountryCode_)(ProvinceCode_);
+    }
+};
+
+typedef ObjectImpl<mms::Standalone> StandaloneObject;
+typedef ObjectImpl<mms::Mmapped> MappedObject;
+
+template <typename P>
+ObjectImpl<P>::ObjectImpl(const string& raw)
 {
     wstring_convert<codecvt_utf8<char32_t>, char32_t> utf32conv;
     stringstream columns(raw);
@@ -110,13 +159,17 @@ GeoObject::GeoObject(const string& raw)
     while (getline(columns, column, '\t')) {
         switch (idx) {
             case 0: Id_ = stoi(column); break;
-            case 1: Name_ = utf32conv.from_bytes(column); break;
+            case 1: {
+                auto name = utf32conv.from_bytes(column);
+                Name_.insert(Name_.end(), name.begin(), name.end());
+                break;
+            }
             case 2: AsciiName_ = column; break;
             case 3: {
                 stringstream names(column);
                 string name;
                 while (getline(names, name, ',')) {
-                    AltHashes_.push_back(hash<u32string>()(toLower(utf32conv.from_bytes(name))));
+                    AltHashes_.push_back(hash<u32string>()(ToLower(utf32conv.from_bytes(name))));
                 }
                 break;
             }
@@ -130,102 +183,205 @@ GeoObject::GeoObject(const string& raw)
         }
         ++idx;
     }
+}
+
+template <typename P>
+struct DataImpl {
+    mms::unordered_map<P, uint32_t, ObjectImpl<P>> Objects_;
+    mms::unordered_map<P, uint64_t, mms::vector<P, uint32_t>> IdsByNameHash_;
+    mms::unordered_map<P, uint64_t, mms::vector<P, uint32_t>> IdsByAltHash_;
+    mms::unordered_map<P, mms::string<P>, uint32_t> CountryByCode_;
+    mms::unordered_map<P, mms::string<P>, uint32_t> ProvinceByCode_;
+
+    void IdByHash(uint64_t hash, uint32_t id, bool alt) {
+        auto& map = alt ? IdsByAltHash_ : IdsByNameHash_;
+        map[hash].push_back(id);
+    }
+
+    template<class A> void traverseFields(A a) const {
+        a(Objects_)(IdsByNameHash_)(IdsByAltHash_)(CountryByCode_)(ProvinceByCode_);
+    }
 };
 
-void GeoObject::Merge(const GeoObject& obj) {
-    assert(Id_ == obj.Id_);
-    if (Population_ == 0) {
-        Population_ = obj.Population_;
-    }
-}
+typedef DataImpl<mms::Standalone> StandaloneData;
+typedef DataImpl<mms::Mmapped> MappedData;
 
-bool GeoObject::IsCountry() const {
-    return Type_ == _PolitIndep;
-}
-
-bool GeoObject::IsProvince() const {
-    return Type_ == _Adm1;// && Type_ <= _AdmDiv;
-}
-
-bool GeoObject::IsCity() const {
-    return Type_ >= _AdmEnd;
-}
-
-bool GeoObject::HasCountryCode() const {
-    return !CountryCode_.empty();
-}
-
-bool GeoObject::HasProvinceCode() const {
-    return !ProvinceCode_.empty();
-}
-
-class GeoNames::Impl {
-    typedef unique_ptr<GeoObject> GeoObjectPtr;
-
+template <typename Impl>
+class GeoObjectProxy: public GeoObject {
 public:
-    Impl()
+    GeoObjectProxy(const Impl& impl)
+        : Impl_(impl)
     {
     }
 
-    bool LoadData(const string& fileName, bool saveRaw) {
-        ifstream file(fileName);
+    virtual ~GeoObjectProxy()
+    {
+    }
+
+    virtual uint32_t Id() const override {
+        return Impl_.Id_;
+    }
+
+    virtual GeoType Type() const override {
+        return Impl_.Type_;
+    }
+
+    virtual double Latitude() const override {
+        return Impl_.Latitude_;
+    }
+
+    virtual double Longitude() const override {
+        return Impl_.Longitude_;
+    }
+
+    virtual size_t Population() const override {
+        return Impl_.Population_;
+    }
+
+    virtual u32string Name() const override {
+        return u32string(Impl_.Name_.begin(), Impl_.Name_.end());
+    }
+
+    virtual string AsciiName() const override {
+        return Impl_.AsciiName_;
+    }
+
+    virtual string CountryCode() const override {
+        return Impl_.CountryCode_;
+    }
+
+    virtual string ProvinceCode() const override {
+        return Impl_.ProvinceCode_;
+    }
+
+    virtual vector<size_t> AltHashes() const override {
+        return vector<size_t>(Impl_.AltHashes_.begin(), Impl_.AltHashes_.end());
+    }
+
+private:
+    const Impl& Impl_;
+};
+
+bool GeoObject::IsCountry() const {
+    return Type() == _PolitIndep;
+}
+
+bool GeoObject::IsProvince() const {
+    return Type() == _Adm1;// && Type_ <= _AdmDiv;
+}
+
+bool GeoObject::IsCity() const {
+    return Type() >= _AdmEnd;
+}
+
+bool GeoObject::HasCountryCode() const {
+    return !CountryCode().empty();
+}
+
+bool GeoObject::HasProvinceCode() const {
+    return !ProvinceCode().empty();
+}
+
+class GeoNames::Impl {
+public:
+    Impl()
+        : Data_(nullptr)
+    {
+    }
+
+    bool Build(const string& mapFileName, const string& rawFileName, ostream& err) const {
+        ifstream file(rawFileName);
         if (!file) {
+            err << "Unable to open input file " << rawFileName << endl;
             return false;
         }
+        StandaloneData data;
+
+        size_t n = 0;
         string line;
-        bool firstLine = true;
         while (getline(file, line)) {
             if (line.empty() || line[0] == '#') {
                 continue;
             }
-            if (firstLine) {
-                firstLine = false;
+
+            StandaloneObject object(line);
+            GeoObjectProxy<StandaloneObject> obj(object);
+            if (obj.Type() == _Undef || obj.Type() & 1u) {
                 continue;
             }
 
-            Objects_.emplace_back(new GeoObject(line));
-            auto& obj = Objects_.back();
-            if (!saveRaw) {
-                string().swap(obj->Raw_);
-            }
-            if (obj->Type_ == _Undef || obj->Type_ & 1u) {
-                Objects_.pop_back();
-                continue;
-            }
-            auto it = ObjById_.find(obj->Id_);
-            if (it != ObjById_.end()) {
-                it->second->Merge(*obj);
-                Objects_.pop_back();
+            auto it = data.Objects_.find(obj.Id());
+            if (it != data.Objects_.end()) {
+                it->second.Merge(object);
                 continue;
             }
 
-            ObjById_.insert({ obj->Id_, obj.get() });
-            ObjsByName_.insert(obj.get());
-            for (size_t i = 0; i < obj->AltHashes_.size(); ++i) {
-                ObjsByAltHash_.insert({ obj.get(), i });
+            data.Objects_.insert({ obj.Id(), object });
+            data.IdByHash(object.NameHash(), obj.Id(), false);
+            for (auto hash: obj.AltHashes()) {
+                data.IdByHash(hash, obj.Id(), true);
             }
-            if (obj->IsCountry()) {
-                CountryByCode_.insert({ obj->CountryCode_, obj.get() });
+            if (obj.IsCountry()) {
+                data.CountryByCode_.insert({ obj.CountryCode(), obj.Id() });
             }
-            if (obj->IsProvince()) {
-                ProvinceByCode_.insert({ obj->CountryCode_ + obj->ProvinceCode_, obj.get() });
+            if (obj.IsProvince()) {
+                data.ProvinceByCode_.insert({ obj.CountryCode() + obj.ProvinceCode(), obj.Id() });
             }
+            ++n;
         }
+        if (data.Objects_.empty()) {
+            err << "No object was mapped" << endl;
+            return false;
+        }
+
+        ofstream out(mapFileName);
+        const size_t pos = mms::write(out, data);
+        out.write((const char*)&pos, sizeof(size_t));
+        out.close();
         return true;
     }
 
-    bool Init(ostream& err) {
-        if (!Initialized_) {
+    bool Init(const string& mapFileName, ostream& err) {
+        int fd = ::open(mapFileName.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            struct stat st;
+            if (fstat(fd, &st) == -1) {
+                err << "Failed to stat map file: " << mapFileName << " error: " << strerror(errno) << endl;
+                return false;
+            }
+            if (st.st_size <= (int)sizeof(size_t)) {
+                err << "Invalid map file: " << mapFileName << " size: " << st.st_size << endl;
+                return false;
+            }
+            const size_t size = st.st_size - sizeof(size_t);
+            size_t pos;
+            if (pread(fd, &pos, sizeof(size_t), size) != sizeof(size_t)) {
+                err << "Failed to read map position from file: " << mapFileName << " error: " << strerror(errno) << endl;
+                return false;
+            }
+            if (pos >= size) {
+                err << "Invalid map position in file: " << mapFileName << endl;
+                return false;
+            }
+            auto data = (char*) mmap(0, size, PROT_READ, MAP_SHARED, fd, 0);
+            Data_ = reinterpret_cast<const MappedData*>(data + pos);
+        } else {
+            err << "Failed to open file: " << mapFileName << " error: " << strerror(errno) << endl;
+            return false;
+        }
+
+        if (Data_) {
             size_t incompleteObjs = 0;
-            for (auto& obj: Objects_) {
-                auto country = CountryByCode_.find(obj->CountryCode_);
-                if (country == CountryByCode_.end()) {
+            for (auto& it: Data_->Objects_) {
+                GeoObjectProxy<MappedObject> obj(it.second);
+                auto country = Data_->CountryByCode_.find(obj.CountryCode());
+                if (country == Data_->CountryByCode_.end()) {
                     //~ err << obj->Raw_ << endl;
                     ++incompleteObjs;
                     continue;
                 }
-                auto province = ProvinceByCode_.find(obj->CountryCode_ + obj->ProvinceCode_);
-                if (province == ProvinceByCode_.end()) {
+                auto province = Data_->ProvinceByCode_.find(obj.CountryCode() + obj.ProvinceCode());
+                if (province == Data_->ProvinceByCode_.end()) {
                     //~ err << obj->Raw_ << endl;
                     ++incompleteObjs;
                     continue;
@@ -235,13 +391,12 @@ public:
                 err << "Have " << incompleteObjs << " objects without country or province code" << endl;
                 //~ return false;
             }
-            Initialized_ = true;
         }
-        return Initialized_;
+        return Data_ != nullptr;
     }
 
     bool Parse(vector<ParseResult>& results, const string& str, bool uniqueOnly) const {
-        if (!Initialized_) {
+        if (!Data_) {
             return false;
         }
         wstring_convert<codecvt_utf8<char32_t>, char32_t> utf8codec;
@@ -292,31 +447,34 @@ public:
         unordered_map<string, MatchedObject> provinces;
         unordered_map<uint32_t, MatchedObject> cities;
 
-        auto addObj = [&countries, &provinces, &cities, &utf8codec](const GeoObject* obj, const u32string& token, bool byName) {
+        auto addObj = [&countries, &provinces, &cities, &utf8codec](GeoObjectPtr obj, const u32string& token, bool byName) {
             string name(utf8codec.to_bytes(token));
             if (obj->IsCountry()) {
-                countries[obj->CountryCode_].Update(obj, name, byName);
+                countries[obj->CountryCode()].Update(obj, name, byName);
             } else if (obj->IsProvince()) {
-                provinces[obj->CountryCode_ + obj->ProvinceCode_].Update(obj, name, byName);
+                provinces[obj->CountryCode() + obj->ProvinceCode()].Update(obj, name, byName);
             } else if (obj->IsCity()) {
-                cities[obj->Id_].Update(obj, name, byName);
+                cities[obj->Id()].Update(obj, name, byName);
             }
         };
 
         for (auto& names: hypotheses) {
-            GeoObject obj;
             for (auto& name: names) {
-                obj.Name_ = name;
-                auto range = ObjsByName_.equal_range(&obj);
-                for (auto it = range.first; it != range.second; ++it) {
-                    addObj(*it, name, true);
+                auto it = Data_->IdsByNameHash_.find(std::hash<u32string>()(ToLower(name)));
+                if (it == Data_->IdsByNameHash_.end()) {
+                    continue;
+                }
+                for (auto& id: it->second) {
+                    addObj(GetObj(id), name, true);
                 }
             }
             for (auto& name: names) {
-                vector<size_t>(1, hash<u32string>()(toLower(name))).swap(obj.AltHashes_);
-                auto range = ObjsByAltHash_.equal_range({ &obj, 0 });
-                for (auto it = range.first; it != range.second; ++it) {
-                    addObj(it->first, name, false);
+                auto it = Data_->IdsByAltHash_.find(std::hash<u32string>()(ToLower(name)));
+                if (it == Data_->IdsByAltHash_.end()) {
+                    continue;
+                }
+                for (auto& id: it->second) {
+                    addObj(GetObj(id), name, false);
                 }
             }
             if (names[0].size() == 2) {
@@ -324,13 +482,13 @@ public:
                 if (code.size() == 2) {
                     code[0] = toupper(code[0]);
                     code[1] = toupper(code[1]);
-                    auto it = CountryByCode_.find(code);
-                    if (it != CountryByCode_.end()) {
-                        addObj(it->second, names[0], true);
+                    auto it = Data_->CountryByCode_.find(code);
+                    if (it != Data_->CountryByCode_.end()) {
+                        addObj(GetObj(it->second), names[0], true);
                     }
-                    it = ProvinceByCode_.find(string("US") + code);
-                    if (it != ProvinceByCode_.end()) {
-                        addObj(it->second, names[0], true);
+                    it = Data_->ProvinceByCode_.find(string("US") + code);
+                    if (it != Data_->ProvinceByCode_.end()) {
+                        addObj(GetObj(it->second), names[0], true);
                     }
                 }
             }
@@ -343,18 +501,18 @@ public:
         unordered_set<string> used;
         unordered_set<uint32_t> added;
         for (auto it: cities) {
-            if (!it.second || !(added.insert(it.second.Object_->Id_)).second) {
+            if (!it.second || !(added.insert(it.second.Object_->Id())).second) {
                 continue;
             }
             found.push_back(ParseResult());
             auto& res = found.back();
-            auto obj = it.second.Object_;
+            auto obj = it.second.Object_.get();
             res.City_ = it.second;
 
             if (!obj->HasCountryCode()) {
                 continue;
             }
-            auto code = obj->CountryCode_;
+            auto code = obj->CountryCode();
             auto c = countries.find(code);
             if (c != countries.end()) {
                 res.Country_ = c->second;
@@ -363,7 +521,7 @@ public:
             if (!obj->HasProvinceCode()) {
                 continue;
             }
-            code += obj->ProvinceCode_;
+            code += obj->ProvinceCode();
             auto p = provinces.find(code);
             if (p != provinces.end()) {
                 res.Province_ = p->second;
@@ -376,16 +534,16 @@ public:
             }
             found.push_back(ParseResult());
             auto& res = found.back();
-            auto obj = it.second.Object_;
+            auto obj = it.second.Object_.get();
             res.Province_ = it.second;
 
             if (!obj->HasCountryCode()) {
                 continue;
             }
-            auto c = countries.find(obj->CountryCode_);
+            auto c = countries.find(obj->CountryCode());
             if (c != countries.end()) {
                 res.Country_ = c->second;
-                used.insert(obj->CountryCode_);
+                used.insert(obj->CountryCode());
             }
         }
         for (auto& it: countries) {
@@ -413,8 +571,7 @@ public:
                     }
                 }
             }
-            score = score << matched.size();
-            return score;
+            return score << matched.size();
         };
 
         size_t maxScore = 0;
@@ -441,16 +598,16 @@ public:
                 result.Score_ = maxScore;
                 if (!result.Country_) {
                     assert(result.City_ || result.Province_);
-                    auto countryCode = result.City_ ? result.City_.Object_->CountryCode_ : result.Province_.Object_->CountryCode_;
-                    auto it = CountryByCode_.find(countryCode);
-                    if (it != CountryByCode_.end()) {
-                        result.Country_.Object_ = it->second;
+                    auto countryCode = result.City_ ? result.City_.Object_->CountryCode() : result.Province_.Object_->CountryCode();
+                    auto it = Data_->CountryByCode_.find(countryCode);
+                    if (it != Data_->CountryByCode_.end()) {
+                        result.Country_.Object_ = GetObj(it->second);
                     }
                 }
                 if (result.City_ && !result.Province_) {
-                    auto it = ProvinceByCode_.find(result.City_.Object_->CountryCode_ + result.City_.Object_->ProvinceCode_);
-                    if (it != ProvinceByCode_.end()) {
-                        result.Province_.Object_ = it->second;
+                    auto it = Data_->ProvinceByCode_.find(result.City_.Object_->CountryCode() + result.City_.Object_->ProvinceCode());
+                    if (it != Data_->ProvinceByCode_.end()) {
+                        result.Province_.Object_ = GetObj(it->second);
                     }
                 }
             }
@@ -461,15 +618,21 @@ public:
     }
 
 private:
+    GeoObjectPtr GetObj(uint32_t id) const {
+        auto it = Data_->Objects_.find(id);
+        assert(it != Data_->Objects_.end());
+        return GeoObjectPtr(new GeoObjectProxy<MappedObject>(it->second));
+    }
+
     struct MatchedObject: public ParsedObject {
-        void Update(const GeoObject* obj, string token, bool byName) {
+        void Update(GeoObjectPtr obj, string token, bool byName) {
             if (Ambiguous_) {
                 return;
             } else if (!Object_) {
                 Object_ = obj;
                 Tokens_.push_back(token);
                 ByName_ = byName;
-            } else if (Object_->Id_ != obj->Id_) {
+            } else if (Object_->Id() != obj->Id()) {
                 Object_ = nullptr;
                 Tokens_.clear();
                 ByName_ = false;
@@ -494,36 +657,8 @@ private:
         }
     };
 
-    struct GeoObjNameHash {
-        size_t operator() (const GeoObject* p) const {
-            return std::hash<u32string>()(toLower(p->Name_));
-        }
-    };
-    struct GeoObjNameEqual {
-        bool operator() (const GeoObject* a, const GeoObject* b) const {
-            return toLower(a->Name_) == toLower(b->Name_);
-        }
-    };
-
-    struct GeoObjAltNameHash {
-        size_t operator() (pair<const GeoObject*, size_t> p) const {
-            return p.first->AltHashes_[p.second];
-        }
-    };
-    struct GeoObjAltNameEqual {
-        bool operator() (pair<const GeoObject*, size_t> a, pair<const GeoObject*, size_t> b) const {
-            return a.first->AltHashes_[a.second] == b.first->AltHashes_[b.second];
-        }
-    };
-
 private:
-    unordered_map<uint32_t, GeoObject*> ObjById_;
-    unordered_map<string, const GeoObject*> CountryByCode_;
-    unordered_map<string, const GeoObject*> ProvinceByCode_;
-    unordered_multiset<const GeoObject*, GeoObjNameHash, GeoObjNameEqual> ObjsByName_;
-    unordered_multiset<pair<const GeoObject*, size_t>, GeoObjAltNameHash, GeoObjAltNameEqual> ObjsByAltHash_;
-    vector<GeoObjectPtr> Objects_;
-    bool Initialized_ = false;
+    const MappedData* Data_;
 };
 
 GeoNames::GeoNames()
@@ -533,12 +668,12 @@ GeoNames::GeoNames()
 
 GeoNames::~GeoNames() = default;
 
-bool GeoNames::LoadData(const string& fileName, bool saveRaw) {
-    return Impl_->LoadData(fileName, saveRaw);
+bool GeoNames::Build(const string& mapFileName, const string& rawFileName, ostream& err) const {
+    return Impl_->Build(mapFileName, rawFileName, err);
 }
 
-bool GeoNames::Init(ostream& err) {
-    return Impl_->Init(err);
+bool GeoNames::Init(const string& mapFileName, ostream& err) {
+    return Impl_->Init(mapFileName, err);
 }
 
 bool GeoNames::Parse(vector<ParseResult>& results, const string& str, bool uniqueOnly) const {

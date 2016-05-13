@@ -14,6 +14,13 @@ new_git_repository(
 )
 
 new_git_repository(
+    name = "mms",
+    remote = "https://github.com/yandex/mms",
+    commit = "242bd540b62a450d0fc409b7b3a0422232cc005d",
+    build_file = "contrib/mms.BUILD",
+)
+
+new_git_repository(
     name = "json",
     remote = "https://github.com/nlohmann/json",
     tag = "v1.1.0",
