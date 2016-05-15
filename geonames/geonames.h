@@ -7,6 +7,8 @@
 
 namespace geonames {
 
+double HaversineDistance(double lat1d, double lon1d, double lat2d, double lon2d);
+
 enum GeoType {
     _Undef = 0,
 
@@ -49,9 +51,14 @@ enum GeoType {
     _PopulCapHist   = 61,
     _PopulEnd       = 62,
 
+    _AreaRegion     = 62,
+    _AreaRegionEcon = 64,
+    _AreaRegionHist = 65,
+    _AreaEnd        = 66,
+
     _TypesBegin = _PolitIndep,
     _TypesMain  = _PopulSect,
-    _TypesEnd   = _PopulCapHist
+    _TypesEnd   = _AreaEnd
 };
 
 GeoType GeoTypeFromString(const std::string& str);
@@ -86,6 +93,8 @@ public:
 
     bool HasCountryCode() const;
     bool HasProvinceCode() const;
+
+    double HaversineDistance(const GeoObject& obj) const;
 };
 
 typedef std::shared_ptr<GeoObject> GeoObjectPtr;
@@ -93,8 +102,6 @@ typedef std::shared_ptr<GeoObject> GeoObjectPtr;
 struct ParsedObject {
     GeoObjectPtr Object_;
     std::vector<std::string> Tokens_;
-    bool ByName_ = false;
-    bool Ambiguous_ = false;
 
     operator bool() const {
         return Object_.get() != nullptr;
@@ -105,7 +112,14 @@ struct ParseResult {
     ParsedObject Country_;
     ParsedObject Province_;
     ParsedObject City_;
-    size_t Score_ = 0;
+    double Score_ = 0;
+};
+
+struct ParserSettings {
+    std::string Delimiters_ = "\t .;,/&()–";
+    std::string DefaultCountry_;
+    bool UniqueOnly_ = false;
+    double MergeNear_ = 0;
 };
 
 class GeoNames {
@@ -116,7 +130,7 @@ public:
     bool Build(const std::string& mapFileName, const std::string& rawFileName, std::ostream& err) const;
     bool Init(const std::string& mapFileName, std::ostream& err);
 
-    bool Parse(std::vector<ParseResult>& results, const std::string& str, bool uniqueOnly = true) const;
+    bool Parse(std::vector<ParseResult>& results, const std::string& str, const ParserSettings& settings = ParserSettings()) const;
 
 private:
     class Impl;

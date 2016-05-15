@@ -83,6 +83,8 @@ int Main(int argc, char* argv[]) {
 
     size_t n = 0;
     string line;
+    geonames::ParserSettings settings;
+    settings.UniqueOnly_ = uniqueOnly.getValue();
     vector<geonames::ParseResult> results;
     while (getline(*in, line)) {
         ++n;
@@ -109,7 +111,7 @@ int Main(int argc, char* argv[]) {
             auto it = data.find(jsonField.getValue());
             if (it != data.end()) {
                 results.clear();
-                if (geoNames.Parse(results, it.value().get<string>(), uniqueOnly.getValue())) {
+                if (geoNames.Parse(results, it.value().get<string>(), settings)) {
                     assert(!results.empty());
                     string city;
                     string state;

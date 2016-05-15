@@ -28,6 +28,37 @@ using namespace std;
 
 namespace geonames {
 
+static const double PI = 3.14159265358979323846;
+static const double EARTH_RADIUS_KM = 6371.0;
+
+double Deg2Rad(double deg) {
+    return (deg * PI / 180);
+}
+
+double Rad2Deg(double rad) {
+    return (rad * 180 / PI);
+}
+
+/**
+ * Returns the distance between two points on the Earth.
+ * Direct translation from http://en.wikipedia.org/wiki/Haversine_formula
+ * @param lat1d Latitude of the first point in degrees
+ * @param lon1d Longitude of the first point in degrees
+ * @param lat2d Latitude of the second point in degrees
+ * @param lon2d Longitude of the second point in degrees
+ * @return The distance between the two points in kilometers
+ */
+double HaversineDistance(double lat1d, double lon1d, double lat2d, double lon2d) {
+    double lat1r, lon1r, lat2r, lon2r, u, v;
+    lat1r = Deg2Rad(lat1d);
+    lon1r = Deg2Rad(lon1d);
+    lat2r = Deg2Rad(lat2d);
+    lon2r = Deg2Rad(lon2d);
+    u = sin((lat2r - lat1r)/2);
+    v = sin((lon2r - lon1r)/2);
+    return 2.0 * EARTH_RADIUS_KM * asin(sqrt(u * u + cos(lat1r) * cos(lat2r) * v * v));
+}
+
 string GeoTypeToString(GeoType type) {
     switch (type) {
         case _Adm1:         return "ADM1";
@@ -65,6 +96,10 @@ string GeoTypeToString(GeoType type) {
         case _PopulDestroyed: return "PPLW";
         case _PopulHist:    return "PPLH";
         case _PopulCapHist: return "PPLCH";
+
+        case _AreaRegion:       return "RGN";
+        case _AreaRegionEcon:   return "RGNE";
+        case _AreaRegionHist:   return "RGNH";
         default: break;
     }
     return "";
@@ -282,6 +317,10 @@ bool GeoObject::HasProvinceCode() const {
     return !ProvinceCode().empty();
 }
 
+double GeoObject::HaversineDistance(const GeoObject& obj) const {
+    return geonames::HaversineDistance(Latitude(), Longitude(), obj.Latitude(), obj.Longitude());
+}
+
 class GeoNames::Impl {
 public:
     Impl()
@@ -395,12 +434,13 @@ public:
         return Data_ != nullptr;
     }
 
-    bool Parse(vector<ParseResult>& results, const string& str, bool uniqueOnly) const {
+    bool Parse(vector<ParseResult>& results, const string& str, const ParserSettings& settings) const {
         if (!Data_) {
             return false;
         }
         wstring_convert<codecvt_utf8<char32_t>, char32_t> utf8codec;
         const auto wstr = utf8codec.from_bytes(str);
+        const auto wdelims = utf8codec.from_bytes(settings.Delimiters_);
 
         vector<u32string> tokens;
         vector<u32string> delims;
@@ -409,7 +449,7 @@ public:
         size_t pos = 0;
         while (pos < wstr.size()) {
             size_t next = 0;
-            while (pos < wstr.size() && (next = wstr.find_first_of(U"\t .;,/&()", pos)) == pos) {
+            while (pos < wstr.size() && (next = wstr.find_first_of(wdelims, pos)) == pos) {
                 delim.append(1, wstr[pos]);
                 ++pos;
             }
@@ -426,6 +466,8 @@ public:
         if (!tokens.empty()) {
             delims.push_back(delim);
         }
+
+        bool areaToken = false;
         vector<vector<u32string>> hypotheses(1);
         hypotheses[0].push_back(wstr);
         for (uint32_t idx = 0; idx < tokens.size(); ++idx) {
@@ -441,6 +483,11 @@ public:
                 combined = tokens[idx] + tokens[idx + 1];
                 names.push_back(combined);
             }
+
+            // Hack, do something with this
+            if (ToLower(tokens[idx]) == U"area") {
+                areaToken = true;
+            }
         }
 
         unordered_map<string, MatchedObject> countries;
@@ -450,11 +497,11 @@ public:
         auto addObj = [&countries, &provinces, &cities, &utf8codec](GeoObjectPtr obj, const u32string& token, bool byName) {
             string name(utf8codec.to_bytes(token));
             if (obj->IsCountry()) {
-                countries[obj->CountryCode()].Update(obj, name, byName);
+                countries[obj->CountryCode()].Update(obj, name, token, byName);
             } else if (obj->IsProvince()) {
-                provinces[obj->CountryCode() + obj->ProvinceCode()].Update(obj, name, byName);
+                provinces[obj->CountryCode() + obj->ProvinceCode()].Update(obj, name, token, byName);
             } else if (obj->IsCity()) {
-                cities[obj->Id()].Update(obj, name, byName);
+                cities[obj->Id()].Update(obj, name, token, byName);
             }
         };
 
@@ -497,14 +544,14 @@ public:
             }
         }
 
-        vector<ParseResult> found;
+        vector<MatchResult> found;
         unordered_set<string> used;
         unordered_set<uint32_t> added;
         for (auto it: cities) {
             if (!it.second || !(added.insert(it.second.Object_->Id())).second) {
                 continue;
             }
-            found.push_back(ParseResult());
+            found.push_back(MatchResult());
             auto& res = found.back();
             auto obj = it.second.Object_.get();
             res.City_ = it.second;
@@ -532,7 +579,7 @@ public:
             if (!it.second || used.find(it.first) != used.end()) {
                 continue;
             }
-            found.push_back(ParseResult());
+            found.push_back(MatchResult());
             auto& res = found.back();
             auto obj = it.second.Object_.get();
             res.Province_ = it.second;
@@ -550,51 +597,91 @@ public:
             if (!it.second || used.find(it.first) != used.end()) {
                 continue;
             }
-            found.push_back(ParseResult());
+            found.push_back(MatchResult());
             auto& res = found.back();
             res.Country_ = it.second;
         }
 
-        auto calcScore = [](const ParseResult& res) {
-            size_t score = 0;
-            size_t scores[] = { 3, 2, 1 };
-            ParsedObject objs[] = { res.Country_, res.Province_, res.City_ };
-            unordered_set<string> matched;
+        string defaultCountryCode;
+        if (!found.empty() && !settings.DefaultCountry_.empty()) {
+            vector<ParseResult> tmp;
+            ParserSettings tmpSettings;
+            tmpSettings.UniqueOnly_ = true;
+            if (Parse(tmp, settings.DefaultCountry_, tmpSettings)) {
+                if (tmp[0].Country_) {
+                    defaultCountryCode = tmp[0].Country_.Object_->CountryCode();
+                }
+            }
+        }
+
+        auto calcScore = [wstr, areaToken, defaultCountryCode](const MatchResult& res) {
+            double score = 0;
+            double tokenScore = 1;
+            double scores[] = { 3, 2, 1 };
+            const MatchedObject* objs[] = { &res.Country_, &res.Province_, &res.City_ };
+            bool defaultCountryMet = false;
+
             for (uint32_t idx = 0; idx < 3; ++idx) {
-                if (objs[idx].Object_) {
+                if (objs[idx]->Object_) {
                     score += scores[idx];
-                    if (objs[idx].ByName_) {
+                    if (objs[idx]->ByName_) {
                         ++score;
                     }
-                    for (auto name: objs[idx].Tokens_) {
-                        matched.insert(name);
+                    if (!defaultCountryMet && defaultCountryCode == objs[idx]->Object_->CountryCode()) {
+                        score += 3;
+                        defaultCountryMet = true;
+                    }
+                    for (auto token: objs[idx]->WideTokens_) {
+                        tokenScore *= 1.0 * token.size() / wstr.size();
                     }
                 }
             }
-            return score << matched.size();
+            // TODO: fix this hack
+            if (areaToken && res.City_ && res.City_.Object_->CountryCode() == "US" && res.City_.Object_->Type() == _PopulAdm1) {
+                score += 3;
+            }
+            return score * (1 + tokenScore);
         };
 
-        size_t maxScore = 0;
+        double maxScore = 0;
         size_t maxScoreCount = 0;
+        unordered_map<string, GeoObjectPtr> maxScoreCities;
+        unordered_set<uint32_t> merged;
+        auto addCity = [&maxScoreCities, &merged, &settings](const MatchResult& res) {
+            if (res.City_) {
+                auto obj = res.City_.Object_;
+                auto key = obj->CountryCode() + obj->ProvinceCode() + obj->AsciiName();
+                auto it = maxScoreCities.insert({ key, obj });
+                if (!it.second && (it.first->second->HaversineDistance(*obj) < settings.MergeNear_)) {
+                    merged.insert(obj->Id());
+                }
+            }
+        };
+
         for (auto& res: found) {
             auto score = calcScore(res);
             if (maxScore < score) {
                 maxScore = score;
                 maxScoreCount = 1;
+                maxScoreCities.clear();
+                addCity(res);
             } else if (maxScore == score) {
                 ++maxScoreCount;
+                addCity(res);
             }
-        }
-        if (uniqueOnly && maxScoreCount > 1) {
-            return false;
         }
 
         vector<ParseResult> tmp;
         for (auto& res: found) {
             // TODO: do not recalculate score
             if (calcScore(res) == maxScore) {
-                tmp.push_back(res);
-                auto& result = tmp.back();
+                if (res.City_ && merged.find(res.City_.Object_->Id()) != merged.end()) {
+                    continue;
+                }
+                ParseResult result;
+                result.Country_ = res.Country_;
+                result.Province_ = res.Province_;
+                result.City_ = res.City_;
                 result.Score_ = maxScore;
                 if (!result.Country_) {
                     assert(result.City_ || result.Province_);
@@ -610,7 +697,12 @@ public:
                         result.Province_.Object_ = GetObj(it->second);
                     }
                 }
+                tmp.push_back(result);
             }
+        }
+
+        if (settings.UniqueOnly_ && tmp.size() > 1) {
+            return false;
         }
         // TODO: remove conflicts
         results.swap(tmp);
@@ -625,16 +717,22 @@ private:
     }
 
     struct MatchedObject: public ParsedObject {
-        void Update(GeoObjectPtr obj, string token, bool byName) {
+        std::vector<std::u32string> WideTokens_;
+        bool ByName_ = false;
+        bool Ambiguous_ = false;
+
+        void Update(GeoObjectPtr obj, string token, u32string wideToken, bool byName) {
             if (Ambiguous_) {
                 return;
             } else if (!Object_) {
                 Object_ = obj;
                 Tokens_.push_back(token);
+                WideTokens_.push_back(wideToken);
                 ByName_ = byName;
             } else if (Object_->Id() != obj->Id()) {
                 Object_ = nullptr;
                 Tokens_.clear();
+                WideTokens_.clear();
                 ByName_ = false;
                 Ambiguous_ = true;
             } else {
@@ -651,10 +749,17 @@ private:
                 }
                 if (!found) {
                     Tokens_.push_back(token);
+                    WideTokens_.push_back(wideToken);
                 }
                 ByName_ |= byName;
             }
         }
+    };
+
+    struct MatchResult {
+        MatchedObject Country_;
+        MatchedObject Province_;
+        MatchedObject City_;
     };
 
 private:
@@ -676,8 +781,8 @@ bool GeoNames::Init(const string& mapFileName, ostream& err) {
     return Impl_->Init(mapFileName, err);
 }
 
-bool GeoNames::Parse(vector<ParseResult>& results, const string& str, bool uniqueOnly) const {
-    return Impl_->Parse(results, str, uniqueOnly);
+bool GeoNames::Parse(vector<ParseResult>& results, const string& str, const ParserSettings& settings) const {
+    return Impl_->Parse(results, str, settings);
 }
 
 } // namespace geonames
