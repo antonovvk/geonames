@@ -11,6 +11,14 @@ using namespace std;
 
 namespace geonames {
 
+struct MatchedObject: public ParsedObject {
+    std::vector<std::u32string> WideTokens_;
+    bool ByName_ = false;
+    bool Ambiguous_ = false;
+
+    void Update(GeoObjectPtr obj, std::string token, std::u32string wideToken, bool byName);
+};
+
 void MatchedObject::Update(GeoObjectPtr obj, string token, u32string wideToken, bool byName) {
     if (Ambiguous_) {
         return;
@@ -44,6 +52,15 @@ void MatchedObject::Update(GeoObjectPtr obj, string token, u32string wideToken, 
         ByName_ |= byName;
     }
 }
+
+struct MatchResult {
+    MatchedObject Country_;
+    MatchedObject Province_;
+    MatchedObject City_;
+    double Score_;
+
+    void CalcScore(std::u32string query, std::string defaultCountryCode, bool areaToken);
+};
 
 void MatchResult::CalcScore(u32string query, string defaultCountryCode, bool areaToken) {
     double score = 0;
