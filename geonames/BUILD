@@ -1,7 +1,13 @@
 cc_library(
     name = "geonames",
-    srcs = ["geonames.cpp"],
-    hdrs = ["geonames.h"],
+    srcs = [
+        "geonames.cpp",
+        "parse_impl.h",
+        "parse_impl.cpp",
+    ],
+    hdrs = [
+        "geonames.h",
+    ],
     deps = [
         "@mms//:mms",
     ],

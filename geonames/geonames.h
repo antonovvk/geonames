@@ -99,6 +99,24 @@ public:
 
 typedef std::shared_ptr<GeoObject> GeoObjectPtr;
 
+class GeoData {
+public:
+    GeoData()
+    {
+    }
+
+    virtual ~GeoData()
+    {
+    }
+
+    virtual GeoObjectPtr GetObject(uint32_t id) const = 0;
+
+    virtual std::pair<const uint32_t*, const uint32_t*> IdsByNameHash(uint64_t hash) const = 0;
+    virtual std::pair<const uint32_t*, const uint32_t*> IdsByAltHash(uint64_t hash) const = 0;
+    virtual const uint32_t* CountryByCode(const std::string& code) const = 0;
+    virtual const uint32_t* ProvinceByCode(const std::string& code) const = 0;
+};
+
 struct ParsedObject {
     GeoObjectPtr Object_;
     std::vector<std::string> Tokens_;

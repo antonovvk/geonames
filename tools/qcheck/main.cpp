@@ -31,6 +31,7 @@ int Main(int argc, char* argv[]) {
     TCLAP::ValueArg<string> jsonField("j", "json-field", "Input is json object per line, read given field", true, "", "field", cmd);
     TCLAP::ValueArg<string> output("o", "output", "Output file", false, "", "file_name", cmd);
     TCLAP::ValueArg<string> jsonUpdate("", "json-update", "Input file is json object per line, add result as field obj", false, "", "field", cmd);
+    TCLAP::ValueArg<double> mergeNear("m", "merge-near", "Merge nearby ambiguous results", false, 0, "haversine distance", cmd);
     TCLAP::SwitchArg uniqueOnly("u", "unique-only", "Output only results with unique match", cmd);
     TCLAP::SwitchArg tokens("t", "tokens", "Output tokens used to deduce objects", cmd);
     TCLAP::SwitchArg oneLine("1", "one-line", "Output result JSON in one line per request", cmd);
@@ -84,6 +85,7 @@ int Main(int argc, char* argv[]) {
     size_t n = 0;
     string line;
     geonames::ParserSettings settings;
+    settings.MergeNear_ = mergeNear.getValue();
     settings.UniqueOnly_ = uniqueOnly.getValue();
     vector<geonames::ParseResult> results;
     while (getline(*in, line)) {
