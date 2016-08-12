@@ -5,6 +5,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <cmath>
 
 #include "include/mms/features/hash/c++11.h"
 #include "include/mms/vector.h"
@@ -210,13 +211,18 @@ ObjectImpl<P>::ObjectImpl(const string& raw)
     }
 }
 
+template <typename T>
+struct StringHash: public std::unary_function<T, size_t> {
+    size_t operator()(const T& s) const { return std::hash<std::string>()(s.c_str()); }
+};
+
 template <typename P>
 struct DataImpl {
     mms::unordered_map<P, uint32_t, ObjectImpl<P>> Objects_;
     mms::unordered_map<P, uint64_t, mms::vector<P, uint32_t>> IdsByNameHash_;
     mms::unordered_map<P, uint64_t, mms::vector<P, uint32_t>> IdsByAltHash_;
-    mms::unordered_map<P, mms::string<P>, uint32_t> CountryByCode_;
-    mms::unordered_map<P, mms::string<P>, uint32_t> ProvinceByCode_;
+    mms::unordered_map<P, mms::string<P>, uint32_t, StringHash> CountryByCode_;
+    mms::unordered_map<P, mms::string<P>, uint32_t, StringHash> ProvinceByCode_;
 
     void IdByHash(uint64_t hash, uint32_t id, bool alt) {
         auto& map = alt ? IdsByAltHash_ : IdsByNameHash_;
