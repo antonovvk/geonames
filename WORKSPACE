@@ -23,6 +23,6 @@ new_git_repository(
 new_git_repository(
     name = "json",
     remote = "https://github.com/nlohmann/json",
-    tag = "v1.1.0",
+    tag = "v2.0.5",
     build_file = "contrib/json.BUILD",
 )

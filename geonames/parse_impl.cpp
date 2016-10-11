@@ -165,10 +165,22 @@ private:
             hypotheses.push_back(Hypothesis());
             auto& names = hypotheses.back().Names_;
             u32string combined;
+            bool untrivialDelim = false;
             for (uint32_t extra = idx; extra < min<size_t>(idx + 3, Tokens_.size()); ++extra) {
                 combined += Tokens_[extra];
                 names.push_back(combined);
                 combined += Delims_[extra];
+                if (Delims_[extra].find_first_not_of(U" ") != string::npos) {
+                    untrivialDelim = true;
+                }
+            }
+            if (untrivialDelim) {
+                combined.clear();
+                for (uint32_t extra = idx; extra < min<size_t>(idx + 3, Tokens_.size()); ++extra) {
+                    combined += Tokens_[extra];
+                    names.push_back(combined);
+                    combined += U" ";
+                }
             }
             if (idx + 1 < Tokens_.size() && Delims_[idx].find_first_not_of(U"\t ") == string::npos) {
                 combined = Tokens_[idx] + Tokens_[idx + 1];
