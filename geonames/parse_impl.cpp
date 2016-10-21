@@ -80,7 +80,7 @@ void MatchResult::CalcScore(u32string query, string defaultCountryCode, bool are
                 defaultCountryMet = true;
             }
             for (auto token: objs[idx]->WideTokens_) {
-                tokenScore += token.size() / query.size();
+                tokenScore += 1.0 * token.size() / query.size();
             }
         }
     }
@@ -97,13 +97,38 @@ class Parser {
     };
 
 public:
-    Parser(const GeoData& data, const string& query, const ParserSettings& settings)
+    Parser(const GeoData& data, const ParserSettings& settings)
         : Settings_(settings)
         , Data_(data)
-        , Query_(Utf8Codec_.from_bytes(query))
         , DelimSet_(Utf8Codec_.from_bytes(Settings_.Delimiters_))
         , AreaToken_(false)
     {
+    }
+
+    bool Parse(vector<ParseResult>& results, const string& query) {
+        PrepareTokens(query);
+        MakeHypotheses();
+
+        vector<MatchResult> matched;
+        RunMatching(matched);
+
+        vector<ParseResult> tmp;
+        RunScoring(tmp, matched);
+
+        if (Settings_.UniqueOnly_ && tmp.size() > 1) {
+            return false;
+        }
+        // TODO: remove conflicts
+        results.swap(tmp);
+        return !results.empty();
+    }
+
+private:
+    void PrepareTokens(const string& query) {
+        Query_ = Utf8Codec_.from_bytes(query);
+        Tokens_.clear();
+        AreaToken_ = false;
+
         u32string delim;
         size_t pos = 0;
         while (pos < Query_.size()) {
@@ -132,24 +157,6 @@ public:
         }
     }
 
-    bool Parse(vector<ParseResult>& results) {
-        MakeHypotheses();
-
-        vector<MatchResult> matched;
-        RunMatching(matched);
-
-        vector<ParseResult> tmp;
-        RunScoring(tmp, matched);
-
-        if (Settings_.UniqueOnly_ && tmp.size() > 1) {
-            return false;
-        }
-        // TODO: remove conflicts
-        results.swap(tmp);
-        return !results.empty();
-    }
-
-private:
     void MakeHypotheses() {
         Countries_.clear();
         Provinces_.clear();
@@ -365,8 +372,8 @@ private:
     wstring_convert<codecvt_utf8<char32_t>, char32_t> Utf8Codec_;
     const ParserSettings& Settings_;
     const GeoData& Data_;
-    const u32string Query_;
     const u32string DelimSet_;
+    u32string Query_;
     vector<u32string> Tokens_;
     vector<u32string> Delims_;
     bool AreaToken_;
@@ -381,8 +388,8 @@ bool ParseImpl(
     const GeoData& data,
     const ParserSettings& settings
 ) {
-    Parser parser(data, query, settings);
-    return parser.Parse(results);
+    Parser parser(data, settings);
+    return parser.Parse(results, query);
 }
 
 } // namespace geonames
