@@ -64,7 +64,7 @@ struct MatchResult {
 
 void MatchResult::CalcScore(u32string query, string defaultCountryCode, bool areaToken) {
     double score = 0;
-    double tokenScore = 1;
+    double tokenScore = 0;
     double scores[] = { 3, 2, 1 };
     bool defaultCountryMet = false;
     const MatchedObject* objs[] = { &Country_, &Province_, &City_ };
@@ -80,7 +80,7 @@ void MatchResult::CalcScore(u32string query, string defaultCountryCode, bool are
                 defaultCountryMet = true;
             }
             for (auto token: objs[idx]->WideTokens_) {
-                tokenScore *= 1.0 * token.size() / query.size();
+                tokenScore += token.size() / query.size();
             }
         }
     }
